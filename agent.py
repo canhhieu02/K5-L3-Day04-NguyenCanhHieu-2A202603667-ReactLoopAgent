@@ -56,40 +56,6 @@ def run_agent(question, provider, tools, max_steps=6):
         # Bước 3: Nếu không có tool calls và finish == 'stop' → LLM trả lời xong
         if not calls and finish == 'stop':
             answer = message.get('content') or ''
-
-            # --- Kiểm tra nguồn (Bài 4) ---
-            # Lấy tất cả URL incident đã thành công từ trace
-            observed_urls = [
-                e['result'].get('url')
-                for e in trace
-                if e.get('event') == 'tool'
-                and e.get('name') == 'get_incident_details'
-                and isinstance(e.get('result'), dict)
-                and e['result'].get('ok')
-                and e['result'].get('url')
-            ]
-            # Nếu có URL incident nhưng answer không dẫn nguồn → yêu cầu model sửa
-            if observed_urls and not any(url in answer for url in observed_urls):
-                trace.append({'event': 'validation_missing_source', 'step': step, 'urls': observed_urls})
-                # Còn budget → yêu cầu model thêm nguồn, gọi tiếp vòng lặp
-                if step + 1 < max_steps:
-                    messages.append({
-                        'role': 'user',
-                        'content': (
-                            'Câu trả lời cần dẫn nguồn URL của incident đã tra cứu. '
-                            f'Hãy bổ sung các URL sau vào câu trả lời: {", ".join(observed_urls)}'
-                        ),
-                    })
-                    continue  # Gọi model lần nữa để sửa
-                else:
-                    # Hết steps, không thể sửa → trả max_steps
-                    return {
-                        'status': 'max_steps',
-                        'answer': answer,
-                        'trace': trace,
-                        'usage': usage,
-                    }
-            # Trả kết quả hoàn thành
             return {
                 'status': 'completed',
                 'answer': answer,
