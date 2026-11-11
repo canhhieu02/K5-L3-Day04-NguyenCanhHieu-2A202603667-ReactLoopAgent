@@ -1,4 +1,6 @@
 """Bốn provider cùng một interface. Không chứa agent loop."""
+
+import time
 import json
 import os
 import urllib.error
@@ -11,17 +13,40 @@ CONFIG = {
     'anthropic': ('ANTHROPIC_API_KEY', 'https://api.anthropic.com/v1/messages'),
 }
 
+RETRY_STATUS = {429, 503}
+RETRY_DELAYS = (5, 15, 30, 60)  # giây; tổng tối đa ~110s mỗi lần gọi
+
+
+def _error_hint(exc):
+    """Chỉ lấy mã trạng thái và thông báo ngắn, không in toàn bộ response body."""
+    try:
+        body = json.loads(exc.read().decode('utf-8', 'replace'))
+        if isinstance(body, list) and body:
+            body = body[0]
+        err = body.get('error', {}) if isinstance(body, dict) else {}
+        return f" [{err.get('status', '')}: {str(err.get('message', ''))[:160]}]"
+    except Exception:
+        return ''
 
 def post_json(url, headers, payload):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+    data = json.dumps(payload).encode()
+    all_headers = {'Content-Type': 'application/json', **headers}
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        req = urllib.request.Request(url, data=data, headers=all_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code in RETRY_STATUS and attempt < len(RETRY_DELAYS):
+                wait = RETRY_DELAYS[attempt]
+                retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                if retry_after and retry_after.isdigit():
+                    wait = max(wait, min(int(retry_after), 120))
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.{_error_hint(exc)}') from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
 
 
 class Provider:
